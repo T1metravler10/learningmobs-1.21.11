@@ -1,0 +1,20 @@
+{
+  "learningmobs.configuration.title": "Learning Mobs Config",
+  "learningmobs.configuration.section.learningmobs.common.toml": "Learning Mobs",
+  "learningmobs.configuration.section.learningmobs.common.toml.title": "Learning Mobs",
+
+  "learningmobs.configuration.learning.mobs.creeper": "Enable Creeper Learning",
+  "learningmobs.configuration.learning.mobs.zombie": "Enable Zombie Learning",
+  "learningmobs.configuration.learning.mobs.skeleton": "Enable Skeleton Learning",
+
+  "learningmobs.configuration.learning.generationLengthTicks": "Generation Length (Ticks)",
+  "learningmobs.configuration.learning.maxNetworksPerMob": "Max Networks per Mob Type",
+  "learningmobs.configuration.learning.learningTickInterval": "Learning Tick Interval",
+  "learningmobs.configuration.learning.mutationRate": "Mutation Rate",
+  "learningmobs.configuration.learning.mutationStdDev": "Mutation Std Dev",
+  "learningmobs.configuration.learning.learningGoalPriority": "Learning Goal Priority",
+  "learningmobs.configuration.learning.learningControlStrength": "Learning Control Strength",
+  "learningmobs.configuration.learning.learningSpeedMultiplier": "Learning Speed Multiplier",
+
+  "key.learningmobs.debug": "Open Learning Mobs Debug"
+}
