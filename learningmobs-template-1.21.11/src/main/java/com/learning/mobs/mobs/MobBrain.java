@@ -9,13 +9,13 @@ public interface MobBrain {
 
     double calculateFitness();
 
-    default void recordDamageDealt(double amount) {
+    default void recordDamageDealt(net.minecraft.world.entity.Entity victim, double amount) {
     }
 
     default void recordDamageTaken(double amount) {
     }
 
-    default void recordKill() {
+    default void recordKill(net.minecraft.world.entity.Entity victim) {
     }
 
     default double[] lastOutputs() {
@@ -40,6 +40,12 @@ public interface MobBrain {
 
     default int kills() {
         return 0;
+    }
+
+    default void recordAttack() {
+    }
+
+    default void recordDistanceProgress(double amount) {
     }
 
     NeuralNetwork network();

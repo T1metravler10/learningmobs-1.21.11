@@ -22,34 +22,13 @@ public class SkeletonBrain extends AbstractMobBrain {
 
     @Override
     protected double[] buildInputs(Mob mob) {
-        Level level = mob.level();
-        LivingEntity target = mob.getTarget();
-        double targetDistance = target == null ? MAX_TARGET_DISTANCE : mob.distanceTo(target);
-        double targetVisible = target != null && mob.hasLineOfSight(target) ? 1.0D : 0.0D;
-        double targetHealth = target == null ? 0.0D : BrainMath.normalizeDistance(target.getHealth(), Math.max(1.0D, target.getMaxHealth()));
-        double targetDeltaY = target == null ? 0.0D
-                : BrainMath.clamp((target.getY() - mob.getY()) / 8.0D, -1.0D, 1.0D);
+        double[] inputs = createStandardInputs(mob);
 
-        List<? extends Mob> nearby = level.getEntitiesOfClass(mob.getClass(), mob.getBoundingBox().inflate(16.0D));
-        boolean hasBow = mob.getItemBySlot(EquipmentSlot.MAINHAND).getItem() instanceof BowItem
-                || mob.getItemBySlot(EquipmentSlot.MAINHAND).getItem() instanceof CrossbowItem;
+        boolean hasBow = mob.getItemBySlot(EquipmentSlot.MAINHAND).getItem() instanceof net.minecraft.world.item.BowItem
+                || mob.getItemBySlot(EquipmentSlot.MAINHAND).getItem() instanceof net.minecraft.world.item.CrossbowItem;
+        inputs[38] = hasBow ? 1.0D : 0.0D;
+        inputs[39] = !mob.getItemBySlot(EquipmentSlot.OFFHAND).isEmpty() ? 1.0D : 0.0D;
 
-        double[] inputs = new double[type.inputCount()];
-        inputs[0] = target == null ? 0.0D : 1.0D;
-        inputs[1] = BrainMath.normalizeDistance(targetDistance, MAX_TARGET_DISTANCE);
-        inputs[2] = targetVisible;
-        inputs[3] = targetHealth;
-        inputs[4] = BrainMath.normalizeHealth(mob);
-        inputs[5] = BrainMath.normalizeLight(level, mob.blockPosition());
-        inputs[6] = BrainMath.normalizeTime(level);
-        inputs[7] = BrainMath.normalizeGroupSize(nearby.size(), MAX_GROUP_SIZE);
-        inputs[8] = mob.onGround() ? 1.0D : 0.0D;
-        inputs[9] = mob.isInWaterOrRain() ? 1.0D : 0.0D;
-        inputs[10] = mob.isAggressive() ? 1.0D : 0.0D;
-        inputs[11] = BrainMath.clamp(mob.getDeltaMovement().length() * 3.0D, 0.0D, 1.0D);
-        inputs[12] = hasBow ? 1.0D : 0.0D;
-        inputs[13] = targetDeltaY;
-        inputs[14] = mob.isOnFire() ? 1.0D : 0.0D;
         return inputs;
     }
 }

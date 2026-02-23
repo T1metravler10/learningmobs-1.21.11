@@ -47,4 +47,12 @@ public final class BrainMath {
         }
         return clamp((double) size / max, 0.0D, 1.0D);
     }
+
+    public static String formatTime(long ticks) {
+        if (ticks < 0) return "00:00";
+        long totalSeconds = ticks / 20;
+        long minutes = totalSeconds / 60;
+        long seconds = totalSeconds % 60;
+        return String.format(java.util.Locale.ROOT, "%02d:%02d", minutes, seconds);
+    }
 }

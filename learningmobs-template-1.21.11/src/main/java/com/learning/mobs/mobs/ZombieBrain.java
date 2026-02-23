@@ -14,39 +14,49 @@ public class ZombieBrain extends AbstractMobBrain {
     private static final double MAX_TARGET_DISTANCE = 48.0D;
     private static final int MAX_GROUP_SIZE = 8;
 
+    private double villagerDamageDealt;
+    private int villagerKills;
+
     public ZombieBrain(NeuralNetwork network) {
         super(MobLearningType.ZOMBIE, network);
     }
 
     @Override
+    public void recordDamageDealt(net.minecraft.world.entity.Entity victim, double amount) {
+        super.recordDamageDealt(victim, amount);
+        if (victim.getType() == net.minecraft.world.entity.EntityType.VILLAGER) {
+            villagerDamageDealt += amount;
+        }
+    }
+
+    @Override
+    public void recordKill(net.minecraft.world.entity.Entity victim) {
+        super.recordKill(victim);
+        if (victim.getType() == net.minecraft.world.entity.EntityType.VILLAGER) {
+            villagerKills++;
+        }
+    }
+
+    @Override
     protected double[] buildInputs(Mob mob) {
-        Level level = mob.level();
-        LivingEntity target = mob.getTarget();
-        double targetDistance = target == null ? MAX_TARGET_DISTANCE : mob.distanceTo(target);
-        double targetVisible = target != null && mob.hasLineOfSight(target) ? 1.0D : 0.0D;
-        double targetHealth = target == null ? 0.0D : BrainMath.normalizeDistance(target.getHealth(), Math.max(1.0D, target.getMaxHealth()));
-        double armorValue = BrainMath.clamp(mob.getArmorValue() / 20.0D, 0.0D, 1.0D);
+        double[] inputs = createStandardInputs(mob);
 
-        List<? extends Mob> nearby = level.getEntitiesOfClass(mob.getClass(), mob.getBoundingBox().inflate(16.0D));
-        boolean hasWeapon = !mob.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty();
+        inputs[38] = mob.isBaby() ? 1.0D : 0.0D;
+        inputs[39] = !mob.getItemBySlot(EquipmentSlot.MAINHAND).isEmpty() ? 1.0D : 0.0D;
 
-        double[] inputs = new double[type.inputCount()];
-        inputs[0] = target == null ? 0.0D : 1.0D;
-        inputs[1] = BrainMath.normalizeDistance(targetDistance, MAX_TARGET_DISTANCE);
-        inputs[2] = targetVisible;
-        inputs[3] = targetHealth;
-        inputs[4] = armorValue;
-        inputs[5] = BrainMath.normalizeHealth(mob);
-        inputs[6] = BrainMath.normalizeLight(level, mob.blockPosition());
-        inputs[7] = BrainMath.normalizeTime(level);
-        inputs[8] = BrainMath.normalizeGroupSize(nearby.size(), MAX_GROUP_SIZE);
-        inputs[9] = mob.onGround() ? 1.0D : 0.0D;
-        inputs[10] = mob.isInWaterOrRain() ? 1.0D : 0.0D;
-        inputs[11] = mob.isBaby() ? 1.0D : 0.0D;
-        inputs[12] = mob.isAggressive() ? 1.0D : 0.0D;
-        inputs[13] = BrainMath.clamp(mob.getDeltaMovement().length() * 3.0D, 0.0D, 1.0D);
-        inputs[14] = hasWeapon ? 1.0D : 0.0D;
-        inputs[15] = mob.isOnFire() ? 1.0D : 0.0D;
         return inputs;
+    }
+
+    @Override
+    public double calculateFitness() {
+        double fitness = super.calculateFitness();
+        
+        // Reward for villager damage: +1.0 per damage point (on top of super +2.0)
+        fitness += villagerDamageDealt * 1.0D;
+        
+        // Reward for villager kills: +5.0 per kill (on top of super +6.0)
+        fitness += villagerKills * 5.0D;
+        
+        return fitness;
     }
 }

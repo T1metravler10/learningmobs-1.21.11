@@ -32,7 +32,9 @@ public class LearningAssistGoal extends Goal {
 
     @Override
     public boolean canUse() {
-        return manager.getBrain(mob) != null;
+        if (manager.getBrain(mob) == null) return false;
+        // Allow if not VANILLA mode OR if this specific mob is forced to FULL takeover
+        return manager.getTakeoverMode(type) != TakeoverMode.VANILLA || manager.isFullTakeover(mob);
     }
 
     @Override
@@ -42,154 +44,178 @@ public class LearningAssistGoal extends Goal {
 
     @Override
     public void tick() {
-        if (meleeCooldown > 0) {
-            meleeCooldown -= 1;
-        }
-        if (rangedCooldown > 0) {
-            rangedCooldown -= 1;
-        }
-        if (wanderCooldown > 0) {
-            wanderCooldown -= 1;
-        }
+        if (meleeCooldown > 0) meleeCooldown -= 1;
+        if (rangedCooldown > 0) rangedCooldown -= 1;
+        if (wanderCooldown > 0) wanderCooldown -= 1;
+
         MobBrain brain = manager.getBrain(mob);
-        if (brain == null) {
-            return;
-        }
+        if (brain == null) return;
+
+        TakeoverMode mode = manager.getTakeoverMode(type);
+        if (mode == TakeoverMode.VANILLA) return;
+
         double[] outputs = brain.lastOutputs();
-        if (outputs.length < type.outputCount()) {
-            return;
-        }
-        boolean fullTakeover = manager.isFullTakeover(mob);
+        if (outputs.length < type.outputCount()) return;
+
+        boolean fullTakeover = mode == TakeoverMode.FULL || manager.isFullTakeover(mob) || toSignal(outputs[8]) > 0.7D;
+        
+        boolean stopRequested = applyUniversalOutputs(outputs, fullTakeover);
+
         switch (type) {
-            case CREEPER -> applyCreeper(outputs, fullTakeover);
-            case ZOMBIE -> applyZombie(outputs, fullTakeover);
-            case SKELETON -> applySkeleton(outputs, fullTakeover);
+            case CREEPER -> applyCreeper(outputs, fullTakeover, stopRequested);
+            case ZOMBIE -> applyZombie(outputs, fullTakeover, stopRequested);
+            case SKELETON -> applySkeleton(outputs, fullTakeover, stopRequested);
         }
     }
 
-    private void applyCreeper(double[] outputs, boolean fullTakeover) {
-        LivingEntity target = mob.getTarget();
-        double moveToward = toSignal(outputs[0]);
-        double moveAway = toSignal(outputs[1]);
-        double strafe = outputs[2];
-        double jump = toSignal(outputs[3]);
-        double explode = toSignal(outputs[4]);
-        double stop = toSignal(outputs[5]);
-        double wander = toSignal(outputs[6]);
-        double sprint = toSignal(outputs[7]);
-        double speed = moveSpeed();
+    private boolean applyUniversalOutputs(double[] outputs, boolean fullTakeover) {
+        double sprint = toSignal(outputs[4]);
+        double sneak = toSignal(outputs[5]);
+        double jump = toSignal(outputs[2]);
+        double lookYaw = outputs[6];
+        double lookPitch = outputs[7];
+        double aggressive = toSignal(outputs[9]);
+        double stop = toSignal(outputs[11]);
 
         mob.setSprinting(sprint > threshold(0.5D, fullTakeover));
+        mob.setShiftKeyDown(sneak > threshold(0.5D, fullTakeover));
+        mob.setAggressive(aggressive > threshold(0.5D, fullTakeover));
 
-        if (stop > threshold(0.6D, fullTakeover) && fullTakeover) {
+        boolean stopRequested = stop > threshold(0.6D, fullTakeover);
+        if (stopRequested) {
             mob.getNavigation().stop();
-            return;
-        }
-
-        if (target != null) {
-            if (moveToward > threshold(0.5D, fullTakeover) && moveToward >= moveAway) {
-                moveTo(target, speed);
-            } else if (moveAway > threshold(0.5D, fullTakeover)) {
-                moveAwayFrom(target, speed, 7.0D);
-            }
-            if (Math.abs(strafe) > threshold(0.45D, fullTakeover)) {
-                strafeAround(target, strafe, 1.5D);
-            }
-            if (explode > threshold(0.5D, fullTakeover) && mob instanceof Creeper creeper && mob.distanceTo(target) < 4.5D) {
-                creeper.setSwellDir(1);
-            }
-        } else if (wander > threshold(0.45D, fullTakeover)) {
-            wanderRandom(speed);
         }
 
         if (jump > threshold(0.7D, fullTakeover) && mob.onGround()) {
             mob.getJumpControl().jump();
         }
+
+        if (Math.abs(lookYaw) > 0.1D || Math.abs(lookPitch) > 0.1D) {
+            mob.setYRot(mob.getYRot() + (float) lookYaw * 10.0F);
+            mob.setXRot((float) BrainMath.clamp(mob.getXRot() + lookPitch * 10.0D, -90.0D, 90.0D));
+        }
+        return stopRequested;
     }
 
-    private void applyZombie(double[] outputs, boolean fullTakeover) {
+    private void applyCreeper(double[] outputs, boolean fullTakeover, boolean stopRequested) {
         LivingEntity target = mob.getTarget();
-        double attack = toSignal(outputs[0]);
-        double chase = toSignal(outputs[1]);
-        double retreat = toSignal(outputs[2]);
-        double strafe = outputs[3];
-        double jump = toSignal(outputs[4]);
-        double stop = toSignal(outputs[5]);
-        double wander = toSignal(outputs[6]);
-        double sprint = toSignal(outputs[7]);
+        MobBrain brain = manager.getBrain(mob);
+        double moveForward = outputs[0];
+        double strafe = outputs[1];
+        double explode = toSignal(outputs[3]);
+        double wander = toSignal(outputs[10]);
+        double pathToTarget = toSignal(outputs[12]);
         double speed = moveSpeed();
 
-        mob.setSprinting(sprint > threshold(0.5D, fullTakeover));
-
-        if (stop > threshold(0.6D, fullTakeover) && fullTakeover) {
-            mob.getNavigation().stop();
+        if (stopRequested) {
             return;
         }
 
         if (target != null) {
-            if (retreat > threshold(0.5D, fullTakeover) && retreat > chase) {
-                moveAwayFrom(target, speed, 7.0D);
-            } else if (chase > threshold(0.45D, fullTakeover) || attack > threshold(0.45D, fullTakeover)) {
+            if (pathToTarget > threshold(0.45D, fullTakeover)) {
                 moveTo(target, speed);
             }
-            if (Math.abs(strafe) > threshold(0.45D, fullTakeover)) {
+            if (moveForward > 0.1D) {
+                moveTo(target, speed);
+            } else if (moveForward < -0.1D) {
+                moveAwayFrom(target, speed, 7.0D);
+            }
+            
+            if (Math.abs(strafe) > threshold(0.4D, fullTakeover)) {
+                strafeAround(target, strafe, 1.5D);
+            }
+            
+            if (explode > threshold(0.5D, fullTakeover) && mob instanceof Creeper creeper && mob.distanceTo(target) < 4.5D) {
+                if (creeper.getSwellDir() <= 0 && brain != null) {
+                    brain.recordAttack();
+                }
+                creeper.setSwellDir(1);
+            } else if (mob instanceof Creeper creeper) {
+                creeper.setSwellDir(-1);
+            }
+        } else if (wander > threshold(0.5D, fullTakeover)) {
+            wanderRandom(speed);
+        }
+    }
+
+    private void applyZombie(double[] outputs, boolean fullTakeover, boolean stopRequested) {
+        LivingEntity target = mob.getTarget();
+        MobBrain brain = manager.getBrain(mob);
+        double moveForward = outputs[0];
+        double strafe = outputs[1];
+        double attack = toSignal(outputs[3]);
+        double wander = toSignal(outputs[10]);
+        double pathToTarget = toSignal(outputs[12]);
+        double speed = moveSpeed();
+
+        if (stopRequested) {
+            return;
+        }
+
+        if (target != null) {
+            if (pathToTarget > threshold(0.45D, fullTakeover)) {
+                moveTo(target, speed);
+            }
+            if (moveForward > 0.1D) {
+                moveTo(target, speed);
+            } else if (moveForward < -0.1D) {
+                moveAwayFrom(target, speed, 7.0D);
+            }
+
+            if (Math.abs(strafe) > threshold(0.4D, fullTakeover)) {
                 strafeAround(target, strafe, 1.4D);
             }
-            mob.setAggressive(attack > threshold(0.5D, fullTakeover) || chase > threshold(0.5D, fullTakeover));
+
+            mob.setAggressive(attack > 0.3D || moveForward > 0.3D);
+            
             if (attack > threshold(0.5D, fullTakeover) && meleeCooldown == 0 && mob.distanceTo(target) < 3.0D) {
                 if (mob.level() instanceof ServerLevel serverLevel) {
                     mob.doHurtTarget(serverLevel, target);
                     meleeCooldown = 20;
+                    if (brain != null) brain.recordAttack();
                 }
             }
-        } else if (wander > threshold(0.45D, fullTakeover)) {
+        } else if (wander > threshold(0.5D, fullTakeover)) {
             wanderRandom(speed);
-        }
-
-        if (jump > threshold(0.65D, fullTakeover) && mob.onGround()) {
-            mob.getJumpControl().jump();
         }
     }
 
-    private void applySkeleton(double[] outputs, boolean fullTakeover) {
+    private void applySkeleton(double[] outputs, boolean fullTakeover, boolean stopRequested) {
         LivingEntity target = mob.getTarget();
-        double strafe = outputs[0];
-        double retreat = toSignal(outputs[1]);
-        double advance = toSignal(outputs[2]);
-        double ranged = toSignal(outputs[3]);
-        double jump = toSignal(outputs[4]);
-        double stop = toSignal(outputs[5]);
-        double wander = toSignal(outputs[6]);
-        double sprint = toSignal(outputs[7]);
+        MobBrain brain = manager.getBrain(mob);
+        double moveForward = outputs[0];
+        double strafe = outputs[1];
+        double shoot = toSignal(outputs[3]);
+        double wander = toSignal(outputs[10]);
+        double pathToTarget = toSignal(outputs[12]);
         double speed = moveSpeed();
 
-        mob.setSprinting(sprint > threshold(0.5D, fullTakeover));
-
-        if (stop > threshold(0.6D, fullTakeover) && fullTakeover) {
-            mob.getNavigation().stop();
+        if (stopRequested) {
             return;
         }
 
         if (target != null) {
-            if (retreat > threshold(0.5D, fullTakeover) && retreat >= advance) {
-                moveAwayFrom(target, speed, 7.0D);
-            } else if (advance > threshold(0.45D, fullTakeover)) {
+            if (pathToTarget > threshold(0.45D, fullTakeover)) {
                 moveTo(target, speed);
             }
-            if (Math.abs(strafe) > threshold(0.45D, fullTakeover)) {
+            if (moveForward > 0.1D) {
+                moveTo(target, speed);
+            } else if (moveForward < -0.1D) {
+                moveAwayFrom(target, speed, 7.0D);
+            }
+
+            if (Math.abs(strafe) > threshold(0.4D, fullTakeover)) {
                 strafeAround(target, strafe, 1.5D);
             }
-            if (ranged > threshold(0.5D, fullTakeover) && rangedCooldown == 0
+
+            if (shoot > threshold(0.5D, fullTakeover) && rangedCooldown == 0
                     && mob instanceof RangedAttackMob rangedMob && mob.hasLineOfSight(target)) {
                 rangedMob.performRangedAttack(target, 1.0F);
                 rangedCooldown = 25;
+                if (brain != null) brain.recordAttack();
             }
-        } else if (wander > threshold(0.45D, fullTakeover)) {
+        } else if (wander > threshold(0.5D, fullTakeover)) {
             wanderRandom(speed);
-        }
-
-        if (jump > threshold(0.65D, fullTakeover) && mob.onGround()) {
-            mob.getJumpControl().jump();
         }
     }
 

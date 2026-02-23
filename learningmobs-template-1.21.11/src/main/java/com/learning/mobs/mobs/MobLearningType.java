@@ -9,9 +9,9 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 
 public enum MobLearningType {
-    CREEPER("creeper", EntityType.CREEPER, () -> Config.ENABLE_CREEPER.getAsBoolean(), 15, 8),
-    ZOMBIE("zombie", EntityType.ZOMBIE, () -> Config.ENABLE_ZOMBIE.getAsBoolean(), 16, 8),
-    SKELETON("skeleton", EntityType.SKELETON, () -> Config.ENABLE_SKELETON.getAsBoolean(), 15, 8);
+    CREEPER("creeper", EntityType.CREEPER, () -> Config.ENABLE_CREEPER.getAsBoolean(), 40, 13),
+    ZOMBIE("zombie", EntityType.ZOMBIE, () -> Config.ENABLE_ZOMBIE.getAsBoolean(), 40, 13),
+    SKELETON("skeleton", EntityType.SKELETON, () -> Config.ENABLE_SKELETON.getAsBoolean(), 40, 13);
 
     private final String id;
     private final EntityType<? extends Mob> entityType;

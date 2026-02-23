@@ -25,8 +25,10 @@ public final class GeneticAlgorithm {
         }
 
         List<BrainFitness> ranked = new ArrayList<>();
-        for (MobBrain brain : brains) {
-            ranked.add(new BrainFitness(brain.network(), brain.calculateFitness()));
+        synchronized (brains) {
+            for (MobBrain brain : brains) {
+                ranked.add(new BrainFitness(brain.network(), brain.calculateFitness()));
+            }
         }
         ranked.sort(Comparator.comparingDouble(BrainFitness::fitness).reversed());
 

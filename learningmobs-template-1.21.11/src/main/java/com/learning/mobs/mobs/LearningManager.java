@@ -1,13 +1,17 @@
 package com.learning.mobs.mobs;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.learning.mobs.Config;
 import com.learning.mobs.LearningMobs;
@@ -32,35 +36,48 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.loading.FMLPaths;
 
 public class LearningManager {
-    private final EnumMap<MobLearningType, MobLearningPool> pools = new EnumMap<>(MobLearningType.class);
-    private final EnumMap<MobLearningType, List<MobBrain>> generationBrains = new EnumMap<>(MobLearningType.class);
-    private final Map<UUID, ActiveBrain> activeBrains = new HashMap<>();
-    private final Map<UUID, String> lastErrors = new HashMap<>();
-    private final Map<UUID, Boolean> fullTakeover = new HashMap<>();
-    private final Map<UUID, Integer> suppressTicks = new HashMap<>();
-    private final EnumMap<MobLearningType, GenerationStats> lastGenerationStats = new EnumMap<>(MobLearningType.class);
+    private final Map<MobLearningType, MobLearningPool> pools = new ConcurrentHashMap<>();
+    private final Map<MobLearningType, List<MobBrain>> generationBrains = new ConcurrentHashMap<>();
+    private final Map<UUID, ActiveBrain> activeBrains = new ConcurrentHashMap<>();
+    private final Map<UUID, String> lastErrors = new ConcurrentHashMap<>();
+    private final Map<UUID, Boolean> fullTakeover = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> suppressTicks = new ConcurrentHashMap<>();
+    private final Map<MobLearningType, GenerationStats> lastGenerationStats = new ConcurrentHashMap<>();
+    private final Map<MobLearningType, Double> allTimeBestFitness = new ConcurrentHashMap<>();
+    private final Map<MobLearningType, TakeoverMode> typeModes = new ConcurrentHashMap<>();
     private final RandomSource random = RandomSource.create();
 
     private LearningStorage storage;
-    private long lastGenerationTick = -1L;
+    private volatile long lastGenerationTick = -1L;
     private boolean initialized;
 
     public void onServerStarting(MinecraftServer server) {
-        if (initialized) {
-            return;
-        }
-        Path root = FMLPaths.CONFIGDIR.get().resolve("learningmobs").resolve("learning");
+        Path root = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("learningmobs").resolve("learning");
         storage = new LearningStorage(root);
+        
+        // Clear old state to support world switching in singleplayer
+        pools.clear();
+        generationBrains.clear();
+        activeBrains.clear();
+        lastErrors.clear();
+        fullTakeover.clear();
+        suppressTicks.clear();
+        lastGenerationStats.clear();
+        allTimeBestFitness.clear();
+        typeModes.clear();
+
         for (MobLearningType type : MobLearningType.values()) {
             pools.put(type, new MobLearningPool(type, storage, random));
-            generationBrains.put(type, new ArrayList<>());
+            generationBrains.put(type, Collections.synchronizedList(new ArrayList<>()));
+            typeModes.put(type, TakeoverMode.LEARN);
+            allTimeBestFitness.put(type, 0.0D);
         }
         initialized = true;
         ServerLevel overworld = server.overworld();
         if (overworld != null) {
-            lastGenerationTick = overworld.getDayTime();
+            lastGenerationTick = overworld.getGameTime();
         }
-        LearningMobs.LOGGER.info("Learning data path: {}", root.toAbsolutePath());
+        LearningMobs.LOGGER.info("Learning data path for this world: {}", root.toAbsolutePath());
     }
 
     public void onServerStopped(MinecraftServer server) {
@@ -74,6 +91,18 @@ public class LearningManager {
                 pool.save(tick);
             }
         }
+        
+        // Reset state for next potential server start (singleplayer)
+        pools.clear();
+        generationBrains.clear();
+        activeBrains.clear();
+        lastErrors.clear();
+        fullTakeover.clear();
+        suppressTicks.clear();
+        lastGenerationStats.clear();
+        allTimeBestFitness.clear();
+        typeModes.clear();
+        initialized = false;
     }
 
     public void onMobSpawn(Mob mob) {
@@ -141,7 +170,7 @@ public class LearningManager {
         if (source instanceof Mob mobSource) {
             MobBrain brain = getBrain(mobSource);
             if (brain != null && !isSuppressed(mobSource)) {
-                brain.recordDamageDealt(amount);
+                brain.recordDamageDealt(victim, amount);
             }
         }
     }
@@ -150,7 +179,7 @@ public class LearningManager {
         if (source instanceof Mob mobSource) {
             MobBrain brain = getBrain(mobSource);
             if (brain != null && !isSuppressed(mobSource)) {
-                brain.recordKill();
+                brain.recordKill(victim);
             }
         }
     }
@@ -158,6 +187,26 @@ public class LearningManager {
     public MobBrain getBrain(Mob mob) {
         ActiveBrain active = activeBrains.get(mob.getUUID());
         return active == null ? null : active.brain();
+    }
+
+    public Iterable<Mob> getActiveMobs() {
+        List<Mob> mobs = new ArrayList<>();
+        for (ActiveBrain active : activeBrains.values()) {
+            mobs.add(active.mob());
+        }
+        return mobs;
+    }
+
+    public long getTicksUntilRollover(MinecraftServer server) {
+        if (!initialized) {
+            return -1L;
+        }
+        long worldTick = resolveWorldTick(server);
+        if (lastGenerationTick < 0) {
+            return Config.GENERATION_LENGTH_TICKS.getAsInt();
+        }
+        long elapsed = worldTick - lastGenerationTick;
+        return Math.max(0, Config.GENERATION_LENGTH_TICKS.getAsInt() - elapsed);
     }
 
     private void tickBrains() {
@@ -170,7 +219,13 @@ public class LearningManager {
                 continue;
             }
             try {
-                active.brain().tick(mob);
+                MobBrain brain = active.brain();
+                brain.tick(mob);
+                
+                // Track all-time best fitness
+                double fitness = brain.calculateFitness();
+                allTimeBestFitness.merge(brain.type(), fitness, Math::max);
+                
             } catch (Exception ex) {
                 LearningMobs.LOGGER.warn("Learning brain failed for {}, restoring vanilla AI.", mob.getUUID(), ex);
                 GoalBackup.restore(mob, active.backup());
@@ -209,12 +264,46 @@ public class LearningManager {
             }
             pool.evolve(brains, worldTick);
             brains.clear();
+            allTimeBestFitness.put(type, 0.0D); // Reset highest fitness for the new generation
+            rolloverActiveBrains(type, pool, brains);
+        }
+    }
+
+    private void rolloverActiveBrains(MobLearningType type, MobLearningPool pool, List<MobBrain> brains) {
+        if (pool == null || brains == null) {
+            return;
+        }
+        List<ActiveBrain> toRollover = new ArrayList<>();
+        for (ActiveBrain active : activeBrains.values()) {
+            if (active.brain().type() == type) {
+                toRollover.add(active);
+            }
+        }
+        if (toRollover.isEmpty()) {
+            return;
+        }
+        int generation = pool.generation();
+        for (ActiveBrain active : toRollover) {
+            Mob mob = active.mob();
+            if (mob.isRemoved() || !mob.isAlive()) {
+                continue;
+            }
+            NeuralNetwork network = pool.nextNetwork();
+            MobBrain brain = createBrain(type, network);
+            if (brain == null) {
+                continue;
+            }
+            activeBrains.put(mob.getUUID(), new ActiveBrain(mob, brain, active.backup()));
+            brains.add(brain);
+            CompoundTag data = getCustomDataTag(mob);
+            data.putInt("learningmobs_generation", generation);
+            setCustomDataTag(mob, data);
         }
     }
 
     private long resolveWorldTick(MinecraftServer server) {
         ServerLevel overworld = server.overworld();
-        return overworld == null ? 0L : overworld.getDayTime();
+        return overworld == null ? 0L : overworld.getGameTime();
     }
 
     private MobBrain createBrain(MobLearningType type, NeuralNetwork network) {
@@ -225,7 +314,7 @@ public class LearningManager {
         };
     }
 
-    public void resetBrain(Mob mob) {
+    public void resetBrain(Mob mob, boolean usePool) {
         ActiveBrain active = activeBrains.remove(mob.getUUID());
         if (active != null) {
             GoalBackup.restore(mob, active.backup());
@@ -237,6 +326,189 @@ public class LearningManager {
         lastErrors.remove(mob.getUUID());
         fullTakeover.remove(mob.getUUID());
         suppressTicks.remove(mob.getUUID());
+
+        // Re-attach brain
+        MobLearningType type = MobLearningType.fromEntity(mob);
+        if (type != null && type.isEnabled()) {
+            if (usePool) {
+                attachBrain(mob, type, false);
+            } else {
+                attachFreshBrain(mob, type);
+            }
+        }
+    }
+
+    public void resetBrain(Mob mob) {
+        resetBrain(mob, false);
+    }
+
+    public TakeoverMode getTakeoverMode(MobLearningType type) {
+        return typeModes.getOrDefault(type, TakeoverMode.LEARN);
+    }
+
+    public int setTakeoverMode(MobLearningType type, TakeoverMode mode) {
+        typeModes.put(type, mode);
+        int count = 0;
+        for (ActiveBrain active : activeBrains.values()) {
+            if (active.brain().type() == type) {
+                applyModeToMob(active.mob(), mode, active);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public int setTakeoverModeAll(TakeoverMode mode) {
+        int count = 0;
+        for (MobLearningType type : MobLearningType.values()) {
+            count += setTakeoverMode(type, mode);
+        }
+        return count;
+    }
+
+    private void applyModeToMob(Mob mob, TakeoverMode mode, ActiveBrain active) {
+        if (mode == TakeoverMode.FULL) {
+            fullTakeover.put(mob.getUUID(), Boolean.TRUE);
+            GoalBackup.clearGoals(mob);
+            mob.goalSelector.addGoal(0, new net.minecraft.world.entity.ai.goal.FloatGoal(mob));
+            mob.goalSelector.addGoal(Config.LEARNING_GOAL_PRIORITY.getAsInt(), new LearningAssistGoal(mob, this, active.brain().type()));
+        } else {
+            if (fullTakeover.containsKey(mob.getUUID())) {
+                fullTakeover.remove(mob.getUUID());
+                GoalBackup.restore(mob, active.backup());
+                // Re-add learning goal as it's not in the backup
+                mob.goalSelector.addGoal(Config.LEARNING_GOAL_PRIORITY.getAsInt(), new LearningAssistGoal(mob, this, active.brain().type()));
+            }
+        }
+    }
+
+    public int resetAllBrains(boolean usePool) {
+        List<Mob> toReset = new ArrayList<>();
+        for (ActiveBrain active : activeBrains.values()) {
+            toReset.add(active.mob());
+        }
+        for (Mob mob : toReset) {
+            resetBrain(mob, usePool);
+        }
+        return toReset.size();
+    }
+
+    public int resetAllBrains() {
+        return resetAllBrains(false);
+    }
+
+    public int resetBrainsByType(MobLearningType type, boolean usePool) {
+        List<Mob> toReset = new ArrayList<>();
+        for (ActiveBrain active : activeBrains.values()) {
+            if (active.brain().type() == type) {
+                toReset.add(active.mob());
+            }
+        }
+        for (Mob mob : toReset) {
+            resetBrain(mob, usePool);
+        }
+        return toReset.size();
+    }
+
+    public int resetBrainsByType(MobLearningType type) {
+        return resetBrainsByType(type, false);
+    }
+
+    public void saveData(MobLearningType type, MinecraftServer server) {
+        long tick = resolveWorldTick(server);
+        if (type == null) {
+            for (MobLearningPool pool : pools.values()) {
+                pool.save(tick);
+            }
+        } else {
+            MobLearningPool pool = pools.get(type);
+            if (pool != null) {
+                pool.save(tick);
+            }
+        }
+    }
+
+    public int loadData(String sourceWorldName, MobLearningType type, MinecraftServer server) {
+        Path savesDir = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).getParent();
+        Path sourcePath = savesDir.resolve(sourceWorldName).resolve("learningmobs").resolve("learning");
+        
+        if (!Files.exists(sourcePath)) {
+            throw new IllegalArgumentException("Source world '" + sourceWorldName + "' not found or has no learning data.");
+        }
+
+        Path targetPath = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("learningmobs").resolve("learning");
+        int count = 0;
+
+        try {
+            if (type == null) {
+                for (MobLearningType t : MobLearningType.values()) {
+                    if (copyTypeData(sourcePath, targetPath, t)) {
+                        pools.get(t).reload();
+                        count++;
+                    }
+                }
+            } else {
+                if (copyTypeData(sourcePath, targetPath, type)) {
+                    pools.get(type).reload();
+                    count++;
+                }
+            }
+        } catch (Exception e) {
+            LearningMobs.LOGGER.error("Failed to load data from world {}", sourceWorldName, e);
+            throw new RuntimeException("Failed to load data: " + e.getMessage());
+        }
+
+        return count;
+    }
+
+    private boolean copyTypeData(Path sourceRoot, Path targetRoot, MobLearningType type) throws Exception {
+        Path sourceDir = sourceRoot.resolve(type.id());
+        if (!Files.exists(sourceDir)) return false;
+
+        Path targetDir = targetRoot.resolve(type.id());
+        Files.createDirectories(targetDir);
+
+        Path genJson = sourceDir.resolve("generation.json");
+        Path netDat = sourceDir.resolve("networks.dat");
+
+        if (Files.exists(genJson)) {
+            Files.copy(genJson, targetDir.resolve("generation.json"), StandardCopyOption.REPLACE_EXISTING);
+        }
+        if (Files.exists(netDat)) {
+            Files.copy(netDat, targetDir.resolve("networks.dat"), StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        return true;
+    }
+
+    private void attachFreshBrain(Mob mob, MobLearningType type) {
+        MobLearningPool pool = pools.get(type);
+        if (pool == null) return;
+
+        GoalSnapshot backup = GoalBackup.capture(mob);
+        // Create a completely random network instead of taking one from the pool
+        NeuralNetwork network = NeuralNetwork.random(type.inputCount(), type.outputCount(), random);
+        MobBrain brain = createBrain(type, network);
+        
+        if (brain != null) {
+            activeBrains.put(mob.getUUID(), new ActiveBrain(mob, brain, backup));
+            generationBrains.get(type).add(brain);
+            
+            TakeoverMode mode = getTakeoverMode(type);
+            if (mode == TakeoverMode.FULL) {
+                fullTakeover.put(mob.getUUID(), Boolean.TRUE);
+                GoalBackup.clearGoals(mob);
+                mob.goalSelector.addGoal(0, new net.minecraft.world.entity.ai.goal.FloatGoal(mob));
+            }
+            
+            // Re-add the goal if not present
+            mob.goalSelector.addGoal(Config.LEARNING_GOAL_PRIORITY.getAsInt(), new LearningAssistGoal(mob, this, type));
+            
+            CompoundTag data = getCustomDataTag(mob);
+            data.putString("learningmobs_type", type.id());
+            data.putInt("learningmobs_generation", 0); // Mark as Gen 0/Fresh
+            setCustomDataTag(mob, data);
+        }
     }
 
     public boolean enableFullTakeover(Mob mob) {
@@ -263,6 +535,36 @@ public class LearningManager {
         mob.goalSelector.addGoal(0, new net.minecraft.world.entity.ai.goal.FloatGoal(mob));
         mob.goalSelector.addGoal(learningPriority, new LearningAssistGoal(mob, this, type));
         return true;
+    }
+
+    public int enableFullTakeoverAll() {
+        int count = 0;
+        List<Mob> targets = new ArrayList<>();
+        for (ActiveBrain active : activeBrains.values()) {
+            targets.add(active.mob());
+        }
+        for (Mob mob : targets) {
+            if (enableFullTakeover(mob)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public int enableFullTakeoverByType(MobLearningType type) {
+        int count = 0;
+        List<Mob> targets = new ArrayList<>();
+        for (ActiveBrain active : activeBrains.values()) {
+            if (active.brain().type() == type) {
+                targets.add(active.mob());
+            }
+        }
+        for (Mob mob : targets) {
+            if (enableFullTakeover(mob)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     public boolean isFullTakeover(Mob mob) {
@@ -327,7 +629,7 @@ public class LearningManager {
         boolean takeover = isFullTakeover(mob);
         if (active == null) {
             return new BrainStatus(false, takeover, type, generation, poolGeneration, 0.0D, 0, 0.0D, 0.0D, 0,
-                    new double[0], new double[0], error);
+                    new double[0], new double[0], new double[0], error);
         }
         MobBrain brain = active.brain();
         return new BrainStatus(true,
@@ -342,6 +644,7 @@ public class LearningManager {
                 brain.kills(),
                 brain.lastInputs(),
                 brain.lastOutputs(),
+                brain.network().weights(),
                 error);
     }
 
@@ -370,6 +673,7 @@ public class LearningManager {
                 stats == null ? 0 : stats.sampleCount(),
                 stats == null ? 0.0D : stats.averageFitness(),
                 stats == null ? 0.0D : stats.bestFitness(),
+                allTimeBestFitness.getOrDefault(type, 0.0D),
                 stats == null ? 0L : stats.worldTick());
     }
 
@@ -396,11 +700,13 @@ public class LearningManager {
             double total = 0.0D;
             double best = Double.NEGATIVE_INFINITY;
             int count = 0;
-            for (MobBrain brain : brains) {
-                double fitness = brain.calculateFitness();
-                total += fitness;
-                best = Math.max(best, fitness);
-                count += 1;
+            synchronized (brains) {
+                for (MobBrain brain : brains) {
+                    double fitness = brain.calculateFitness();
+                    total += fitness;
+                    best = Math.max(best, fitness);
+                    count += 1;
+                }
             }
             double average = count == 0 ? 0.0D : total / count;
             return new GenerationStats(count, average, best, worldTick);
@@ -419,6 +725,7 @@ public class LearningManager {
             int kills,
             double[] lastInputs,
             double[] lastOutputs,
+            double[] weights,
             String lastError) {
     }
 
@@ -430,6 +737,7 @@ public class LearningManager {
             int lastSampleCount,
             double lastAverageFitness,
             double lastBestFitness,
+            double allTimeBestFitness,
             long lastWorldTick) {
     }
 
@@ -476,6 +784,14 @@ public class LearningManager {
         }
         activeBrains.put(mob.getUUID(), new ActiveBrain(mob, brain, backup));
         generationBrains.get(type).add(brain);
+        
+        TakeoverMode mode = getTakeoverMode(type);
+        if (mode == TakeoverMode.FULL) {
+            fullTakeover.put(mob.getUUID(), Boolean.TRUE);
+            GoalBackup.clearGoals(mob);
+            mob.goalSelector.addGoal(0, new net.minecraft.world.entity.ai.goal.FloatGoal(mob));
+        }
+        
         mob.goalSelector.addGoal(Config.LEARNING_GOAL_PRIORITY.getAsInt(), new LearningAssistGoal(mob, this, type));
         CompoundTag data = getCustomDataTag(mob);
         data.putString("learningmobs_type", type.id());

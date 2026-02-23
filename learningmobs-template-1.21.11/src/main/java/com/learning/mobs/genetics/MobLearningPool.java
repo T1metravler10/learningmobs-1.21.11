@@ -31,25 +31,31 @@ public class MobLearningPool {
         ensurePopulation();
     }
 
-    public int generation() {
+    public synchronized int generation() {
         return generation;
     }
 
-    public int populationSize() {
+    public synchronized int populationSize() {
         ensurePopulation();
         return networks.size();
     }
 
-    public NeuralNetwork nextNetwork() {
+    public synchronized NeuralNetwork nextNetwork() {
         ensurePopulation();
         if (networks.isEmpty()) {
             return NeuralNetwork.random(type.inputCount(), type.outputCount(), random);
         }
         NeuralNetwork selected = networks.get(nextIndex++ % networks.size());
-        return selected.copy();
+        NeuralNetwork unique = selected.copy();
+        
+        // Apply a small mutation to ensure this specific mob has a unique brain
+        // based on the current generation's elite patterns.
+        unique.mutate(0.05D, 0.1D, random);
+        
+        return unique;
     }
 
-    public void evolve(List<MobBrain> brains, long worldTick) {
+    public synchronized void evolve(List<MobBrain> brains, long worldTick) {
         ensurePopulation();
         int targetSize = Config.MAX_NETWORKS_PER_MOB.getAsInt();
         double mutationRate = Config.MUTATION_RATE.getAsDouble();
@@ -60,9 +66,17 @@ public class MobLearningPool {
         storage.save(type, generation, worldTick, networks);
     }
 
-    public void save(long worldTick) {
+    public synchronized void save(long worldTick) {
         ensurePopulation();
         storage.save(type, generation, worldTick, networks);
+    }
+
+    public synchronized void reload() {
+        MobLearningState state = storage.load(type);
+        this.generation = state.generation();
+        this.networks = new ArrayList<>(state.networks());
+        ensurePopulation();
+        this.nextIndex = 0;
     }
 
     private void ensurePopulation() {
